@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aged-care document redactor</title>
+  <style>
+    :root { --blue: #2563eb; --green: #16a34a; --grey: #4b5563; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; line-height: 1.45; }
+    h1 { margin: 0 0 0.25rem; }
+    p.sub { color: #6b7280; margin-top: 0; }
+    form { padding: 1.25rem; border: 2px dashed #c9d3e0; border-radius: 8px; margin: 1.5rem 0; background: #fbfcfe; }
+    button { background: var(--blue); color: white; border: 0; padding: 0.55rem 1.1rem; border-radius: 4px; cursor: pointer; font-size: 0.95rem; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    .status { margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.95rem; }
+    .status.err { background: #fee2e2; color: #991b1b; }
+    .status.ok  { background: #dcfce7; color: #166534; }
+    .status.info{ background: #dbeafe; color: #1e3a8a; }
+    .section { margin-top: 1.75rem; }
+    .section h2 { font-size: 1.05rem; margin-bottom: 0.5rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.25rem; }
+    .tag { display: inline-block; padding: 0.18rem 0.55rem; margin: 0.18rem 0.18rem 0.18rem 0; border-radius: 4px; font-size: 0.88rem; border: 1px solid; }
+    .tag.person  { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .tag.company { background: #ecfdf5; border-color: #bbf7d0; color: #166534; }
+    .logos { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0.75rem; }
+    .card { border: 1px solid #e5e7eb; padding: 0.6rem; border-radius: 6px; background: white; }
+    .card img { max-width: 100%; max-height: 110px; display: block; margin: 0 auto 0.5rem; }
+    .card .name { font-weight: 600; font-size: 0.88rem; }
+    .card .desc { color: #6b7280; font-size: 0.78rem; margin-top: 0.2rem; }
+    .card.logo { border-color: #fcd34d; background: #fffbeb; }
+    .download a { display: inline-block; background: var(--green); color: white; padding: 0.45rem 1rem; border-radius: 4px; text-decoration: none; margin: 0.25rem 0.5rem 0.25rem 0; font-size: 0.95rem; }
+    .download a.secondary { background: var(--grey); }
+    .empty { color: #9ca3af; font-style: italic; font-size: 0.9rem; }
+    .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #cbd5e1; border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -3px; margin-right: 0.4rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>Aged-care document redactor</h1>
+  <p class="sub">Upload a .doc or .docx file. Claude identifies companies, people, and logos; you get a redacted copy and a JSON report.</p>
+
+  <form id="upload-form">
+    <div class="file-row">
+      <input type="file" id="file-input" name="file" accept=".doc,.docx" required>
+      <button type="submit" id="submit-btn">Process</button>
+    </div>
+    <div class="sub" style="margin-top: 0.5rem;">Max upload size: {{ max_mb }} MB</div>
+  </form>
+
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <script>
+    const form = document.getElementById('upload-form');
+    const fileInput = document.getElementById('file-input');
+    const submitBtn = document.getElementById('submit-btn');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+
+    function setStatus(html, kind) {
+      statusEl.className = kind ? 'status ' + kind : '';
+      statusEl.innerHTML = html;
+    }
+
+    function makeTag(text, cls) {
+      const span = document.createElement('span');
+      span.className = 'tag ' + cls;
+      span.textContent = text;
+      return span;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      resultsEl.innerHTML = '';
+      const file = fileInput.files[0];
+      if (!file) { setStatus('Please choose a file.', 'err'); return; }
+
+      const fd = new FormData();
+      fd.append('file', file);
+      submitBtn.disabled = true;
+      setStatus('<span class="spinner"></span>Uploading and analysing — this may take a minute depending on document size.', 'info');
+
+      try {
+        const r = await fetch('/process', { method: 'POST', body: fd });
+        const data = await r.json().catch(() => ({ error: 'invalid server response' }));
+        if (!r.ok) { setStatus('Error: ' + (data.error || r.statusText), 'err'); return; }
+        setStatus('Done — review the findings below and download the redacted copy.', 'ok');
+        renderResults(data);
+      } catch (err) {
+        setStatus('Network error: ' + err.message, 'err');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    function renderResults(data) {
+      const people = data.entities.people || [];
+      const companies = data.entities.companies || [];
+      const logos = data.logos || [];
+
+      const dl = document.createElement('div');
+      dl.className = 'section download';
+      dl.innerHTML = `
+        <h2>Downloads</h2>
+        <a href="${data.redacted_url}">Redacted .docx</a>
+        <a class="secondary" href="${data.report_url}">JSON report</a>`;
+      resultsEl.appendChild(dl);
+
+      const peopleSec = document.createElement('div');
+      peopleSec.className = 'section';
+      peopleSec.innerHTML = `<h2>People (${people.length})</h2>`;
+      if (!people.length) peopleSec.innerHTML += '<div class="empty">No personal names detected.</div>';
+      else people.forEach(p => peopleSec.appendChild(makeTag(p, 'person')));
+      resultsEl.appendChild(peopleSec);
+
+      const compSec = document.createElement('div');
+      compSec.className = 'section';
+      compSec.innerHTML = `<h2>Companies (${companies.length})</h2>`;
+      if (!companies.length) compSec.innerHTML += '<div class="empty">No company names detected.</div>';
+      else companies.forEach(c => compSec.appendChild(makeTag(c, 'company')));
+      resultsEl.appendChild(compSec);
+
+      const logoSec = document.createElement('div');
+      logoSec.className = 'section';
+      logoSec.innerHTML = `<h2>Embedded images (${logos.length})</h2>`;
+      if (!logos.length) {
+        logoSec.innerHTML += '<div class="empty">No embedded images found.</div>';
+      } else {
+        const grid = document.createElement('div');
+        grid.className = 'logos';
+        logos.forEach(lg => {
+          const card = document.createElement('div');
+          card.className = 'card' + (lg.is_logo ? ' logo' : '');
+          if (lg.url) {
+            const img = document.createElement('img');
+            img.src = lg.url;
+            img.alt = lg.company || 'image';
+            card.appendChild(img);
+          }
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = lg.is_logo ? (lg.company || 'Logo (unknown company)') : 'Not a logo';
+          card.appendChild(name);
+          if (lg.description) {
+            const desc = document.createElement('div');
+            desc.className = 'desc';
+            desc.textContent = lg.description;
+            card.appendChild(desc);
+          }
+          grid.appendChild(card);
+        });
+        logoSec.appendChild(grid);
+      }
+      resultsEl.appendChild(logoSec);
+    }
+  </script>
+</body>
+</html>
